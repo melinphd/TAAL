@@ -1,0 +1,70 @@
+"""
+Author: Mélanie Gaillochet
+Date: 2021-10-21
+"""
+from comet_ml import Experiment
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import torch
+import torch.nn.functional as F
+
+from Utils.augmentation_utils import entropy_2d
+
+
+class PredictionEntropySampler:
+    """
+    Sampling the images with mean entropy on output softmax
+    """
+
+    def __init__(self, budget):
+        self.budget = budget
+
+    def sample(self, model, unlabeled_dataloader, device, comet_exp):
+        """ We sample the images with mean entropy on output softmax"""
+
+        model = model.to(device)
+        model.eval()
+
+        indice_list = []
+        data_list = []
+        pred_list = []
+        output_entropy_list = []
+        mean_output_entropy_list = []
+
+        # We iterate through the unlabeled datatloader
+        with torch.no_grad():
+            for (inputs, _, index) in unlabeled_dataloader:
+                inputs = inputs.to(device, dtype=torch.float)
+
+                # We do a forward pass through the model and latentNet
+                output, _ = model(inputs)
+
+                # We get output probability and prediction
+                prob = F.softmax(output, dim=1)
+                pred = torch.argmax(output, dim=1)
+
+                # We compute the entropy for each pixels of the image
+                cur_entropy = entropy_2d(prob, dim=1)   # shape (H x W)
+                
+                # We keep track of the entropy (of each pixel and for the entire image)
+                output_entropy_list.append(cur_entropy.detach().cpu().numpy())
+                mean_entropy = torch.mean(cur_entropy)   # mean over image (float)
+                mean_output_entropy_list.append(mean_entropy.item())
+
+                # We keep track of all dataloader results
+                cur_index = index.cpu().numpy()
+                indice_list.extend(cur_index.tolist())
+
+                data_list.append(inputs.detach().cpu().numpy())
+                pred_list.append(pred.detach().cpu().numpy())
+
+        uncertainty = mean_output_entropy_list
+
+        # Index in ascending order and take the last values
+        arg = np.argsort(uncertainty)
+        querry_pool_indices = list(torch.tensor(indice_list)[arg][-self.budget:].numpy())
+        uncertainty_values = list(torch.tensor(uncertainty)[arg][-self.budget:].numpy())
+
+        return querry_pool_indices, uncertainty_values
